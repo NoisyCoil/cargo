@@ -27,8 +27,8 @@ stored in the `target/package` directory. This performs the following steps:
     - `[patch]`, `[replace]`, and `[workspace]` sections are removed from the
       manifest.
     - `Cargo.lock` is always included. When missing, a new lock file will be
-      generated. {{man "cargo-install" 1}} will use the packaged lock file if
-      the `--locked` flag is used.
+      generated unless the `--no-gen-lockfile` flag is used. {{man "cargo-install" 1}}
+      will use the packaged lock file if the `--locked` flag is used.
     - A `.cargo_vcs_info.json` file is included that contains information
       about the current VCS checkout hash if available, as well as a flag if the
       worktree is dirty.
@@ -96,6 +96,10 @@ or the license).
 
 {{#option "`--allow-dirty`" }}
 Allow working directories with uncommitted VCS changes to be packaged.
+{{/option}}
+
+{{#option "`--no-gen-lockfile`" }}
+Do not regenerate or create the lock file.
 {{/option}}
 
 {{> options-index }}

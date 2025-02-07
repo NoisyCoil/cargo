@@ -46,6 +46,7 @@ pub struct PackageOpts<'gctx> {
     pub list: bool,
     pub check_metadata: bool,
     pub allow_dirty: bool,
+    pub gen_lockfile: bool,
     pub verify: bool,
     pub jobs: Option<JobsConfig>,
     pub keep_going: bool,
@@ -91,6 +92,7 @@ fn create_package(
     pkg: &Package,
     ar_files: Vec<ArchiveFile>,
     local_reg: Option<&TmpRegistry<'_>>,
+    gen_lockfile: bool,
 ) -> CargoResult<FileLock> {
     let gctx = ws.gctx();
     let filecount = ar_files.len();
@@ -114,8 +116,16 @@ fn create_package(
     gctx.shell()
         .status("Packaging", pkg.package_id().to_string())?;
     dst.file().set_len(0)?;
-    let uncompressed_size = tar(ws, pkg, local_reg, ar_files, dst.file(), &filename)
-        .context("failed to prepare local package for uploading")?;
+    let uncompressed_size = tar(
+        ws,
+        pkg,
+        local_reg,
+        ar_files,
+        dst.file(),
+        &filename,
+        gen_lockfile,
+    )
+    .context("failed to prepare local package for uploading")?;
 
     dst.seek(SeekFrom::Start(0))?;
     let src_path = dst.path();
@@ -194,6 +204,7 @@ fn do_package<'a>(
         .as_path_unlocked()
         .join(LOCKFILE_NAME)
         .exists()
+        && opts.gen_lockfile
     {
         // Make sure the Cargo.lock is up-to-date and valid.
         let dry_run = false;
@@ -241,7 +252,8 @@ fn do_package<'a>(
                 drop_println!(ws.gctx(), "{}", ar_file.rel_str);
             }
         } else {
-            let tarball = create_package(ws, &pkg, ar_files, local_reg.as_ref())?;
+            let tarball =
+                create_package(ws, &pkg, ar_files, local_reg.as_ref(), opts.gen_lockfile)?;
             if let Some(local_reg) = local_reg.as_mut() {
                 if pkg.publish() != &Some(Vec::new()) {
                     local_reg.add_package(ws, &pkg, &tarball)?;
@@ -389,7 +401,7 @@ fn prepare_archive(
     // Check (git) repository state, getting the current commit hash.
     let vcs_info = vcs::check_repo_state(pkg, &src_files, gctx, &opts)?;
 
-    build_ar_list(ws, pkg, src_files, vcs_info)
+    build_ar_list(ws, pkg, src_files, vcs_info, opts.gen_lockfile)
 }
 
 /// Builds list of files to archive.
@@ -399,6 +411,7 @@ fn build_ar_list(
     pkg: &Package,
     src_files: Vec<PathEntry>,
     vcs_info: Option<vcs::VcsInfo>,
+    gen_lockfile: bool,
 ) -> CargoResult<Vec<ArchiveFile>> {
     let mut result = HashMap::new();
     let root = pkg.root();
@@ -409,7 +422,20 @@ fn build_ar_list(
             anyhow::format_err!("non-utf8 path in source directory: {}", rel_path.display())
         })?;
         match rel_str {
-            "Cargo.lock" => continue,
+            "Cargo.lock" => {
+                if gen_lockfile {
+                    continue;
+                } else {
+                    result
+                        .entry(UncasedAscii::new(rel_str))
+                        .or_insert_with(Vec::new)
+                        .push(ArchiveFile {
+                            rel_path: rel_path.to_owned(),
+                            rel_str: rel_str.to_owned(),
+                            contents: FileContents::OnDisk(src_file.to_path_buf()),
+                        });
+                }
+            }
             VCS_INFO_FILE | ORIGINAL_MANIFEST_FILE => anyhow::bail!(
                 "invalid inclusion of reserved file name {} in package source",
                 rel_str
@@ -453,15 +479,17 @@ fn build_ar_list(
         ))?;
     }
 
-    let rel_str = "Cargo.lock";
-    result
-        .entry(UncasedAscii::new(rel_str))
-        .or_insert_with(Vec::new)
-        .push(ArchiveFile {
-            rel_path: PathBuf::from(rel_str),
-            rel_str: rel_str.to_string(),
-            contents: FileContents::Generated(GeneratedFile::Lockfile),
-        });
+    if gen_lockfile {
+        let rel_str = "Cargo.lock";
+        result
+            .entry(UncasedAscii::new(rel_str))
+            .or_insert_with(Vec::new)
+            .push(ArchiveFile {
+                rel_path: PathBuf::from(rel_str),
+                rel_str: rel_str.to_string(),
+                contents: FileContents::Generated(GeneratedFile::Lockfile),
+            });
+    }
 
     if let Some(vcs_info) = vcs_info {
         let rel_str = VCS_INFO_FILE;
@@ -729,6 +757,7 @@ fn tar(
     ar_files: Vec<ArchiveFile>,
     dst: &File,
     filename: &str,
+    gen_lockfile: bool,
 ) -> CargoResult<u64> {
     // Prepare the encoder and its header.
     let filename = Path::new(filename);
@@ -779,7 +808,13 @@ fn tar(
             FileContents::Generated(generated_kind) => {
                 let contents = match generated_kind {
                     GeneratedFile::Manifest => publish_pkg.manifest().to_normalized_contents()?,
-                    GeneratedFile::Lockfile => build_lock(ws, &publish_pkg, local_reg)?,
+                    GeneratedFile::Lockfile => {
+                        if gen_lockfile {
+                            build_lock(ws, &publish_pkg, local_reg)?
+                        } else {
+                            continue;
+                        }
+                    }
                     GeneratedFile::VcsInfo(ref s) => serde_json::to_string_pretty(s)?,
                 };
                 header.set_entry_type(EntryType::file());

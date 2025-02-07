@@ -26,6 +26,10 @@ pub fn cli() -> Command {
             "allow-dirty",
             "Allow dirty working directories to be packaged",
         ))
+        .arg(flag(
+            "no-gen-lockfile",
+            "Do not regenerate or create the lock file",
+        ))
         .arg_silent_suggestion()
         .arg_package_spec_no_all(
             "Package(s) to assemble",
@@ -79,6 +83,7 @@ pub fn exec(gctx: &mut GlobalContext, args: &ArgMatches) -> CliResult {
             list: args.flag("list"),
             check_metadata: !args.flag("no-metadata"),
             allow_dirty: args.flag("allow-dirty"),
+            gen_lockfile: !args.flag("no-gen-lockfile"),
             to_package: specs,
             targets: args.targets()?,
             jobs: args.jobs()?,
